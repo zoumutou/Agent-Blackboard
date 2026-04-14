@@ -1,0 +1,12 @@
+{
+  "name": "research_agent",
+  "pid": 34252,
+  "status": "running",
+  "last_seen": "2026-04-14T11:20:56.588528Z",
+  "capabilities": [
+    "research",
+    "analyze",
+    "search",
+    "investigate"
+  ]
+}

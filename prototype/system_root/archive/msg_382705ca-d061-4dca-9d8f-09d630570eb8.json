@@ -1,0 +1,15 @@
+{
+  "message_id": "382705ca-d061-4dca-9d8f-09d630570eb8",
+  "type": "task",
+  "sender": "writer_agent",
+  "receiver": "research_agent",
+  "timestamp": "2026-04-14T09:06:38.584240Z",
+  "priority": "high",
+  "status": "new",
+  "pid": 0,
+  "payload": {
+    "command": "research",
+    "content": "Analyze the impact of AI on software development",
+    "file_refs": []
+  }
+}

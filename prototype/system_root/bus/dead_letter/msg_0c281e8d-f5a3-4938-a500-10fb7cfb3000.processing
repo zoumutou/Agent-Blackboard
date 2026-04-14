@@ -1,0 +1,15 @@
+{
+  "message_id": "0c281e8d-f5a3-4938-a500-10fb7cfb3000",
+  "type": "result",
+  "sender": "writer_agent",
+  "receiver": "research_agent",
+  "timestamp": "2026-04-14T09:03:16.198634Z",
+  "priority": "normal",
+  "status": "new",
+  "pid": 29716,
+  "payload": {
+    "task_id": "3a3c7e42-ff3c-47a2-8004-dbf0378c5f33",
+    "success": true,
+    "result": "Composed: "
+  }
+}

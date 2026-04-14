@@ -1,0 +1,15 @@
+{
+  "message_id": "8b2869be-333e-4ff9-8da2-dbdfe3d989c9",
+  "type": "result",
+  "sender": "research_agent",
+  "receiver": "writer_agent",
+  "timestamp": "2026-04-14T09:09:04.894761Z",
+  "priority": "normal",
+  "status": "new",
+  "pid": 28380,
+  "payload": {
+    "task_id": "610d0f4a-31a0-4867-9c16-47df6490b51c",
+    "success": true,
+    "result": "Research findings on: Analyze the impact of AI on software development\n\nKey points:\n1. Point A - Supporting evidence\n2. Point B - Additional context\n3. Point C - Conclusion\n"
+  }
+}

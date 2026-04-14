@@ -1,0 +1,15 @@
+{
+  "message_id": "fda31975-907d-44a5-937f-8aaccc7378af",
+  "type": "result",
+  "sender": "research_agent",
+  "receiver": "writer_agent",
+  "timestamp": "2026-04-14T09:03:16.369418Z",
+  "priority": "normal",
+  "status": "new",
+  "pid": 29716,
+  "payload": {
+    "task_id": "3c6f732f-0258-49c5-a115-385c06ff2648",
+    "success": true,
+    "result": "Processed: "
+  }
+}
