@@ -1,3 +1,26 @@
-# 忽略的文件
-记忆体.md
-探索交互.md
+# Blackboard Prototype — Git Ignore
+
+# Runtime artifacts
+prototype/system_root/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Processing / checkpoint state files
+*.processing
+*.checkpoint.json
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python venv
+venv/
+.venv/
