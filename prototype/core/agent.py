@@ -17,6 +17,8 @@ from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 from .message import Message
 from .checkpoint import CheckpointManager
 
+HEARTBEAT_TIMEOUT_SECONDS = 120
+
 
 class InboxHandler(FileSystemEventHandler):
     """监听 inbox 目录的文件事件"""
@@ -25,14 +27,12 @@ class InboxHandler(FileSystemEventHandler):
         self.agent = agent
 
     def on_created(self, event):
-        """文件被创建时触发"""
         if event.is_directory:
             return
         if event.src_path.endswith(".json"):
             self.agent._on_message_arrived(event.src_path)
 
     def on_moved(self, event):
-        """文件被移动到 inbox 时触发"""
         if event.is_directory:
             return
         if event.dest_path.endswith(".json"):
@@ -53,14 +53,9 @@ class BaseAgent(ABC):
         self.bus_dead_letter_dir = self.system_root / "bus" / "dead_letter"
         self.archive_dir = self.system_root / "archive"
 
-        # 创建必要的目录
         for d in [
-            self.inbox_dir,
-            self.workspace_dir,
-            self.outbox_dir,
-            self.bus_pending_dir,
-            self.bus_dead_letter_dir,
-            self.archive_dir,
+            self.inbox_dir, self.workspace_dir, self.outbox_dir,
+            self.bus_pending_dir, self.bus_dead_letter_dir, self.archive_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)
 
@@ -70,7 +65,7 @@ class BaseAgent(ABC):
         self.pid = os.getpid()
 
     def register(self):
-        """在 registry 中注册自己"""
+        self.system_root.joinpath("registry").mkdir(parents=True, exist_ok=True)
         registry_data = {
             "name": self.name,
             "pid": self.pid,
@@ -81,71 +76,115 @@ class BaseAgent(ABC):
         with open(self.registry_file, "w") as f:
             json.dump(registry_data, f, indent=2)
 
-    def heartbeat(self):
-        """定期更新心跳"""
-        while self.running:
-            time.sleep(30)
-            if self.registry_file.exists():
+    def unregister(self):
+        if self.registry_file.exists():
+            try:
                 with open(self.registry_file) as f:
                     data = json.load(f)
+                data["status"] = "stopped"
                 data["last_seen"] = datetime.utcnow().isoformat() + "Z"
                 with open(self.registry_file, "w") as f:
                     json.dump(data, f, indent=2)
+            except Exception:
+                pass
+
+    def heartbeat(self):
+        while self.running:
+            time.sleep(30)
+            try:
+                if self.registry_file.exists():
+                    with open(self.registry_file) as f:
+                        data = json.load(f)
+                    data["last_seen"] = datetime.utcnow().isoformat() + "Z"
+                    data["status"] = "running"
+                    with open(self.registry_file, "w") as f:
+                        json.dump(data, f, indent=2)
+            except Exception:
+                pass
+
+    def _recover_processing_files(self):
+        """Recover .processing files left by a previous crash."""
+        for p in self.workspace_dir.glob("*.processing"):
+            try:
+                target = self.inbox_dir / p.name.replace(".processing", ".json")
+                shutil.move(str(p), str(target))
+                print(f"[{self.name}] Recovered orphaned message: {p.name}")
+            except Exception as e:
+                print(f"[{self.name}] Failed to recover {p.name}: {e}")
+        for p in self.inbox_dir.parent.glob("**/*.processing"):
+            if p.parent == self.inbox_dir or p.parent == self.workspace_dir:
+                try:
+                    target = self.inbox_dir / p.name.replace(".processing", ".json")
+                    shutil.move(str(p), str(target))
+                    print(f"[{self.name}] Recovered orphaned message: {p.name}")
+                except Exception:
+                    pass
+
+    def _process_existing_inbox(self):
+        """Process any messages already in inbox at startup."""
+        for msg_file in sorted(self.inbox_dir.glob("*.json")):
+            self._on_message_arrived(str(msg_file))
 
     def start(self):
-        """启动 Agent"""
         self.running = True
         self.register()
+        self._recover_processing_files()
 
-        # 启动心跳线程
         heartbeat_thread = threading.Thread(target=self.heartbeat, daemon=True)
         heartbeat_thread.start()
 
-        # 启动文件监听
         handler = InboxHandler(self)
         self.observer = Observer()
         self.observer.schedule(handler, str(self.inbox_dir), recursive=False)
         self.observer.start()
 
+        self._process_existing_inbox()
         print(f"[{self.name}] Agent started, PID={self.pid}")
 
     def stop(self):
-        """停止 Agent"""
         self.running = False
         if self.observer:
             self.observer.stop()
             self.observer.join()
+        self.unregister()
         print(f"[{self.name}] Agent stopped")
 
     def _on_message_arrived(self, file_path: str):
         """消息到达时的处理"""
-        try:
-            # 原子操作：rename 为 .processing
-            processing_path = file_path.replace(".json", ".processing")
-            shutil.move(file_path, processing_path)
+        processing_path = file_path.replace(".json", ".processing")
 
-            # 读取消息
-            with open(processing_path) as f:
-                message_data = json.load(f)
+        # Wait for file to be fully written (Windows file locking)
+        message_data = None
+        for attempt in range(8):
+            try:
+                if os.path.exists(file_path):
+                    shutil.move(file_path, processing_path)
+                if not os.path.exists(processing_path):
+                    return
+                with open(processing_path, encoding="utf-8") as f:
+                    message_data = json.load(f)
+                break
+            except (PermissionError, OSError, json.JSONDecodeError):
+                time.sleep(0.3 * (attempt + 1))
+
+        if message_data is None:
+            print(f"[{self.name}] Could not read message: {file_path}")
+            return
+
+        try:
             message = Message(**message_data)
 
-            # 只处理 Task 消息，Result/Signal 消息直接归档
             if message.type != "task":
-                print(f"[{self.name}] Received {message.type} message {message.message_id}, archiving")
                 archive_path = self.archive_dir / message.filename()
-                shutil.move(processing_path, archive_path)
+                shutil.move(processing_path, str(archive_path))
                 return
 
-            # 更新 PID
             message.pid = self.pid
             message.status = "processing"
-
             print(f"[{self.name}] Processing message {message.message_id}")
 
-            # 调用子类的处理逻辑
             result = self.process(message)
 
-            # 生成 Result 消息
             result_message = Message.create_result(
                 sender=self.name,
                 receiver=message.sender,
@@ -153,22 +192,20 @@ class BaseAgent(ABC):
                 success=True,
                 result=result,
             )
-
-            # 发送结果
             self.send(result_message)
 
-            # 移动原消息到 archive
             archive_path = self.archive_dir / message.filename()
-            shutil.move(processing_path, archive_path)
-
+            shutil.move(processing_path, str(archive_path))
             print(f"[{self.name}] Message {message.message_id} completed")
 
         except Exception as e:
             print(f"[{self.name}] Error processing message: {e}")
-            # 移动到 dead_letter
-            if os.path.exists(processing_path):
-                error_path = self.bus_dead_letter_dir / Path(processing_path).name
-                shutil.move(processing_path, error_path)
+            try:
+                if os.path.exists(processing_path):
+                    error_path = self.bus_dead_letter_dir / Path(processing_path).name
+                    shutil.move(processing_path, str(error_path))
+            except Exception:
+                pass
 
     def send(self, message: Message):
         """发送消息"""
@@ -215,10 +252,67 @@ class BaseAgent(ABC):
         pass
 
     def get_capabilities(self) -> list:
-        """返回 Agent 的能力列表"""
         return []
 
-    def call_llm(self, prompt: str) -> str:
-        """调用 LLM（预留接口，原型中 mock 实现）"""
-        # TODO: 接入真实 LLM（如 Claude API）
-        return f"[Mock LLM Response] {prompt[:50]}..."
+    @staticmethod
+    def check_agent_health(registry_dir: Path, timeout_seconds: int = HEARTBEAT_TIMEOUT_SECONDS) -> dict:
+        """Check all registered agents and return their health status."""
+        health = {}
+        if not registry_dir.exists():
+            return health
+        now = time.time()
+        for reg_file in registry_dir.glob("*.json"):
+            try:
+                with open(reg_file) as f:
+                    data = json.load(f)
+                name = data.get("name", reg_file.stem)
+                last_seen = data.get("last_seen", "")
+                status = data.get("status", "unknown")
+                if last_seen and status == "running":
+                    try:
+                        ts = datetime.fromisoformat(last_seen.rstrip("Z")).timestamp()
+                        age = now - ts
+                        if age > timeout_seconds:
+                            status = "timeout"
+                    except (ValueError, OSError):
+                        pass
+                health[name] = {"status": status, "last_seen": last_seen, "pid": data.get("pid")}
+            except Exception:
+                pass
+        return health
+
+    _llm_client_cache: dict = {}
+
+    def call_llm(
+        self,
+        prompt: str,
+        *,
+        tier: str = "cloud",
+        system: str | None = None,
+        json_mode: bool = False,
+    ) -> str | None:
+        """Call a real LLM via llm_client. Returns response content or None on failure."""
+        try:
+            import sys
+            web_scripts = str(Path(__file__).resolve().parents[2] / "web" / "scripts")
+            if web_scripts not in sys.path:
+                sys.path.insert(0, web_scripts)
+            from llm_client import create_client
+
+            cache_key = tier
+            if cache_key not in BaseAgent._llm_client_cache:
+                client = create_client(tier)
+                if client is None:
+                    return None
+                BaseAgent._llm_client_cache[cache_key] = client
+
+            client = BaseAgent._llm_client_cache[cache_key]
+            resp = client.chat(
+                [{"role": "user", "content": prompt}],
+                system=system,
+                json_mode=json_mode,
+            )
+            return resp.content if resp else None
+        except Exception as e:
+            print(f"[{self.name}] LLM call failed: {e}")
+            return None
